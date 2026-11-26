@@ -18,25 +18,71 @@ export function resolveToken(env: NodeJS.ProcessEnv = process.env): string {
   throw new Error('No GitHub token found. Set GITHUB_TOKEN or run `gh auth login`.');
 }
 
+export interface ClientUrls {
+  /** REST base URL. Actions sets GITHUB_API_URL, which also covers GitHub Enterprise Server. */
+  apiUrl?: string;
+  /** GraphQL endpoint. Actions sets GITHUB_GRAPHQL_URL. */
+  graphqlUrl?: string;
+}
+
+export class GitHubRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export class GitHubClient {
+  private readonly apiUrl: string;
+  private readonly graphqlUrl: string;
+
   constructor(
     private readonly token: string,
     private readonly fetchImpl: FetchLike = fetch,
-    private readonly endpoint = 'https://api.github.com/graphql',
-  ) {}
+    urls: ClientUrls = {},
+  ) {
+    this.apiUrl = (urls.apiUrl ?? 'https://api.github.com').replace(/\/+$/, '');
+    this.graphqlUrl = urls.graphqlUrl ?? `${this.apiUrl}/graphql`;
+  }
+
+  private headers(): Record<string, string> {
+    return {
+      authorization: `bearer ${this.token}`,
+      'content-type': 'application/json',
+      accept: 'application/vnd.github+json',
+      'user-agent': 'pr-radar',
+    };
+  }
+
+  async rest<T>(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<T> {
+    const res = await this.fetchImpl(`${this.apiUrl}${path}`, {
+      method,
+      headers: this.headers(),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      let message = res.statusText;
+      try {
+        message = (JSON.parse(detail) as { message?: string }).message ?? message;
+      } catch {
+        // Not JSON; keep the status text.
+      }
+      throw new GitHubRequestError(`GitHub ${method} ${path} failed: ${res.status} ${message}`, res.status);
+    }
+    return (await res.json()) as T;
+  }
 
   async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const res = await this.fetchImpl(this.endpoint, {
+    const res = await this.fetchImpl(this.graphqlUrl, {
       method: 'POST',
-      headers: {
-        authorization: `bearer ${this.token}`,
-        'content-type': 'application/json',
-        'user-agent': 'pr-radar',
-      },
+      headers: this.headers(),
       body: JSON.stringify({ query, variables }),
     });
     if (!res.ok) {
-      throw new Error(`GitHub GraphQL request failed: ${res.status} ${res.statusText}`);
+      throw new GitHubRequestError(`GitHub GraphQL request failed: ${res.status} ${res.statusText}`, res.status);
     }
     const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
     if (json.errors?.length) {
@@ -100,7 +146,7 @@ query($owner: String!, $name: String!, $cursor: String) {
       pageInfo { hasNextPage endCursor }
       nodes {
         ${PR_FIELDS}
-        files(first: 100) { nodes { path } }
+        files(first: 100) { nodes { path additions deletions } }
       }
     }
   }
@@ -112,6 +158,17 @@ query($owner: String!, $name: String!, $cursor: String) {
     pullRequests(states: MERGED, first: 50, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes { ${PR_FIELDS} }
+    }
+  }
+}`;
+
+const PULL_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      state
+      ${PR_FIELDS}
+      files(first: 100) { nodes { path additions deletions } }
     }
   }
 }`;
@@ -185,6 +242,33 @@ export async function fetchPolicyInfo(client: GitHubClient, owner: string, name:
   return info;
 }
 
+/** Fetches one PR with its files, whatever its age, so the PR under review is never cut off by limits. */
+export async function fetchPull(client: GitHubClient, owner: string, name: string, number: number): Promise<PullRequest | undefined> {
+  const data = await client.graphql<{ repository: { pullRequest: (RawPull & { state: string }) | null } | null }>(PULL_QUERY, {
+    owner,
+    name,
+    number,
+  });
+  if (!data.repository) throw new Error(`Repository ${owner}/${name} not found or not accessible`);
+  const raw = data.repository.pullRequest;
+  return raw ? toPull(raw, raw.state === 'MERGED' ? 'MERGED' : 'OPEN') : undefined;
+}
+
+const GITATTRIBUTES_QUERY = `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    object(expression: "HEAD:.gitattributes") { ... on Blob { text } }
+  }
+}`;
+
+/** The root .gitattributes text, or undefined when there is none or it cannot be read. */
+export async function fetchGitattributes(client: GitHubClient, owner: string, name: string): Promise<string | undefined> {
+  return client
+    .graphql<{ repository: { object: { text?: string | null } | null } | null }>(GITATTRIBUTES_QUERY, { owner, name })
+    .then((d) => d.repository?.object?.text ?? undefined)
+    .catch(() => undefined);
+}
+
 export async function fetchViewer(client: GitHubClient): Promise<string | undefined> {
   return client
     .graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})
@@ -218,7 +302,7 @@ interface RawPull {
   changedFiles: number;
   author: { login: string } | null;
   closingIssuesReferences: { nodes: { number: number }[] };
-  files?: { nodes: { path: string }[] } | null;
+  files?: { nodes: { path: string; additions?: number; deletions?: number }[] } | null;
 }
 
 type RepoData<K extends string, N> = { repository: Record<K, Connection<N>> | null };
@@ -253,6 +337,7 @@ function toPull(raw: RawPull, state: PullRequest['state']): PullRequest {
     deletions: raw.deletions,
     changedFiles: raw.changedFiles,
     files: raw.files?.nodes.map((f) => f.path) ?? [],
+    ...(raw.files ? { fileStats: raw.files.nodes.map((f) => ({ path: f.path, additions: f.additions ?? 0, deletions: f.deletions ?? 0 })) } : {}),
     closingIssues: raw.closingIssuesReferences.nodes.map((n) => n.number),
   };
 }
@@ -284,12 +369,13 @@ export async function fetchSnapshot(
   now: () => Date = () => new Date(),
 ): Promise<RepoSnapshot> {
   const vars = { owner, name };
-  const [issues, openPulls, mergedPulls, viewer, policy] = await Promise.all([
+  const [issues, openPulls, mergedPulls, viewer, policy, gitattributes] = await Promise.all([
     collectPages(client, ISSUES_QUERY, vars, repoConnection<'issues', RawIssue>('issues', owner, name), limits.maxIssues),
     collectPages(client, OPEN_PRS_QUERY, vars, repoConnection<'pullRequests', RawPull>('pullRequests', owner, name), limits.maxOpenPulls),
     collectPages(client, MERGED_PRS_QUERY, vars, repoConnection<'pullRequests', RawPull>('pullRequests', owner, name), limits.maxMergedPulls),
     fetchViewer(client),
     fetchPolicyInfo(client, owner, name).catch(() => undefined),
+    fetchGitattributes(client, owner, name),
   ]);
   return {
     owner,
@@ -297,6 +383,7 @@ export async function fetchSnapshot(
     fetchedAt: now().toISOString(),
     viewer,
     policy,
+    ...(gitattributes === undefined ? {} : { gitattributes }),
     issues: issues.map(toIssue),
     openPulls: openPulls.map((p) => toPull(p, 'OPEN')),
     mergedPulls: mergedPulls.map((p) => toPull(p, 'MERGED')),

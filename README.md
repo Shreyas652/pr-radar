@@ -38,6 +38,46 @@ node dist/src/cli.js check --branch --base origin/main
 
 When `owner/repo` is left out, it is read from the `origin` remote (change it with `--remote upstream`).
 
+## GitHub Action
+
+Add a single pr-radar comment to every pull request: competing PRs for the same issue, other open PRs that edit the same files, and the review checklist. The comment is updated in place on every push, never duplicated, and it never @-mentions anyone.
+
+```yaml
+# .github/workflows/pr-radar.yml
+name: pr-radar
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-radar-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Shreyas652/pr-radar@main # pin a release tag or commit SHA in production
+```
+
+**Why `pull_request_target`?** On `pull_request`, GitHub gives PRs from forks a read-only token, so the action can't comment. It still writes the report to the job summary and prints a warning. `pull_request_target` runs with your repository's token instead. That is safe here because pr-radar never checks out or runs the PR's code: it only reads PR metadata through the API. Don't add a step that checks out the PR head to this workflow.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `github-token` | `${{ github.token }}` | Needs `pull-requests: write` to comment. |
+| `comment` | `true` | `false` writes only the job summary and outputs. |
+| `fail-under` | _(empty)_ | Fail the step when the score is below this number (0–100). |
+| `max-prs` | `200` | Open PRs to compare against. The PR under review is always included. |
+| `max-merged` | `150` | Recently merged PRs to fetch. |
+| `min-hotspot` | `3` | Open PRs on one file before it counts as a hotspot. |
+
+Outputs: `score`, `competing` (issues also targeted by other PRs) and `overlaps` (other PRs touching the same files).
+
 ## Contribution policy check
 
 Some projects, including large company-run ones, only accept PRs from collaborators, and say so in their contributing guide. Others want an issue or a "vouch" before any PR. `pr-radar policy` reads the guide GitHub would show (`.github/`, the repo root, `docs/`, then the owner's `.github` repository) and compares it with your access level:
@@ -82,6 +122,13 @@ Results on a sample of real repos (November 2026):
 | **Claimed issues** | One open PR already references the issue. |
 | **Conflict hotspots** | Files touched by at least 3 open PRs (`--min-hotspot`). |
 | **Open PR checklist** | Linked issue, tests, changeset (when the repo uses them), description, reviewable size, no competing PR. |
+
+**Reviewable size** counts only the lines a reviewer reads (600 or fewer passes). Generated files are left out and listed separately, for example `300 lines changed, not counting 1528 in 2 generated files`. Out of the box that covers `dist/` folders at any depth, `*.min.js`, `*.min.css`, `*.map`, `__snapshots__/` and common lockfiles. `build/` is not on the list, because many repos keep source there. The repo's own `.gitattributes` adds to or overrides those defaults with `linguist-generated` lines, the same lines GitHub uses to collapse generated files in diffs:
+
+```gitattributes
+src/gen/** linguist-generated=true   # also treat these as generated
+dist/** -linguist-generated          # this repo's dist/ is real source
+```
 
 Example from a real run on `openai/openai-agents-js` (trimmed):
 
@@ -149,7 +196,6 @@ Other references count as **mentions**. They mark an issue as claimed but never 
 
 ## Roadmap
 
-- GitHub Action that posts the PR check as a single sticky comment (the Markdown already starts with a `<!-- pr-radar -->` marker for this)
 - Repo config file (ignored paths, bot authors, custom checks)
 - Stale claims: issues whose only PR has been inactive for weeks
 - Smarter duplicate detection for PRs that fix the same thing without linking an issue
@@ -160,6 +206,8 @@ Other references count as **mentions**. They mark an issue as claimed but never 
 npm install
 npm test        # builds with tsc, then runs node:test
 ```
+
+`dist/src` is committed because GitHub runs the action straight from the repository. After changing `src/`, run `npm run build` and commit `dist/src` too. CI fails if it is out of date.
 
 ## License
 

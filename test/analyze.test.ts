@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { analyzeRepo, candidateFromPull, checkCandidate, findHotspots, indexClaims, isTestPath } from '../src/analyze.js';
+import { DEFAULT_OPTIONS, analyzeRepo, candidateFromPull, checkCandidate, findHotspots, indexClaims, isTestPath } from '../src/analyze.js';
 import { LONG_BODY, issue, pull, snapshot } from './fixtures.js';
 
 test('classifies issues as contested, claimed, unclaimed and possibly resolved', () => {
@@ -48,7 +48,7 @@ test('hotspots need enough PRs and skip ignored paths', () => {
     pull(3, { files: ['src/a.ts', 'src/b.ts', '.changeset/z.md'] }),
   ];
   assert.deepEqual(findHotspots(pulls), [{ path: 'src/a.ts', pulls: [1, 2, 3] }]);
-  assert.deepEqual(findHotspots(pulls, { minHotspotPulls: 2, ignorePaths: [], maxReviewableLines: 600, changesets: 'auto' }).map((h) => h.path), [
+  assert.deepEqual(findHotspots(pulls, { ...DEFAULT_OPTIONS, minHotspotPulls: 2, ignorePaths: [] }).map((h) => h.path), [
     'src/a.ts',
     'pnpm-lock.yaml',
   ]);
@@ -119,6 +119,41 @@ test('branch checks warn when the repo does not take your PR', () => {
 
   const prCheck = checkCandidate(candidateFromPull(pull(5), snap), snap);
   assert.equal(prCheck.checklist.some((c) => c.id === 'policy'), false, 'existing PRs are not policy-checked');
+});
+
+test('size check leaves generated files out', () => {
+  const stats = [
+    { path: 'src/action.ts', additions: 200, deletions: 10 },
+    { path: 'test/action.test.ts', additions: 90, deletions: 0 },
+    { path: 'dist/src/action.js', additions: 1200, deletions: 300 },
+    { path: 'package-lock.json', additions: 28, deletions: 0 },
+  ];
+  const big = pull(20, { files: stats.map((s) => s.path), fileStats: stats, additions: 1518, deletions: 310 });
+  const snap = snapshot({ openPulls: [big] });
+  const size = checkCandidate(candidateFromPull(big, snap), snap).checklist.find((c) => c.id === 'size');
+  assert.equal(size?.ok, true);
+  assert.equal(size?.detail, '300 lines changed, not counting 1528 in 2 generated files');
+
+  // The repo can say a default is real source, and add its own generated paths.
+  const own = { ...snap, gitattributes: 'dist/** -linguist-generated\nsrc/gen/** linguist-generated=true\n' };
+  const withGen = pull(21, {
+    files: ['dist/src/action.js', 'src/gen/api.ts'],
+    fileStats: [
+      { path: 'dist/src/action.js', additions: 50, deletions: 0 },
+      { path: 'src/gen/api.ts', additions: 900, deletions: 0 },
+    ],
+    additions: 950,
+    deletions: 0,
+  });
+  const ownSize = checkCandidate(candidateFromPull(withGen, own), own).checklist.find((c) => c.id === 'size');
+  assert.equal(ownSize?.detail, '50 lines changed, not counting 900 in 1 generated file');
+});
+
+test('size check falls back to totals without per-file counts', () => {
+  const old = pull(20, { files: ['dist/x.js'], additions: 700, deletions: 0 });
+  const snap = snapshot({ openPulls: [old] });
+  const size = checkCandidate(candidateFromPull(old, snap), snap).checklist.find((c) => c.id === 'size');
+  assert.deepEqual([size?.ok, size?.detail], [false, '700 lines changed']);
 });
 
 test('truncated file lists are reported', () => {

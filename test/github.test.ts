@@ -43,6 +43,7 @@ test('fetchSnapshot maps raw nodes and tolerates a missing viewer', async () => 
       return { data: { repository: { isArchived: false, viewerPermission: 'READ', c0: null, c1: null, c2: { text: 'PRs welcome' } } } };
     }
     if (query.includes('viewer {')) return { errors: [{ message: 'no viewer for app tokens' }] };
+    if (query.includes('.gitattributes')) return { data: { repository: { object: { text: 'dist/** linguist-generated' } } } };
     if (query.includes('issues(')) {
       return {
         data: {
@@ -88,7 +89,7 @@ test('fetchSnapshot maps raw nodes and tolerates a missing viewer', async () => 
                 changedFiles: 1,
                 author: { login: 'dev' },
                 closingIssuesReferences: { nodes: [{ number: 1 }] },
-                ...(merged ? {} : { files: { nodes: [{ path: 'a.ts' }] } }),
+                ...(merged ? {} : { files: { nodes: [{ path: 'a.ts', additions: 4, deletions: 2 }] } }),
               },
             ],
           },
@@ -113,6 +114,9 @@ test('fetchSnapshot maps raw nodes and tolerates a missing viewer', async () => 
     updatedAt: 'u',
   });
   assert.deepEqual(snap.openPulls[0]?.files, ['a.ts']);
+  assert.deepEqual(snap.openPulls[0]?.fileStats, [{ path: 'a.ts', additions: 4, deletions: 2 }]);
+  assert.equal(snap.mergedPulls[0]?.fileStats, undefined, 'merged PRs are fetched without files');
+  assert.equal(snap.gitattributes, 'dist/** linguist-generated');
   assert.equal(snap.openPulls[0]?.body, '');
   assert.equal(snap.mergedPulls[0]?.state, 'MERGED');
   assert.deepEqual(snap.mergedPulls[0]?.files, []);
@@ -166,6 +170,11 @@ test('parses GitHub remotes and numstat output', () => {
   assert.equal(parseGitHubRemote('https://gitlab.com/acme/widgets.git'), undefined);
   assert.deepEqual(parseNumstat('3\t1\tsrc/a.ts\n-\t-\tlogo.png\n\n10\t0\tdir with\ttab.ts'), {
     files: ['src/a.ts', 'logo.png', 'dir with\ttab.ts'],
+    fileStats: [
+      { path: 'src/a.ts', additions: 3, deletions: 1 },
+      { path: 'logo.png', additions: 0, deletions: 0 },
+      { path: 'dir with\ttab.ts', additions: 10, deletions: 0 },
+    ],
     additions: 13,
     deletions: 1,
   });

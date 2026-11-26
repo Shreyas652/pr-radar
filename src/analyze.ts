@@ -1,6 +1,7 @@
+import { GeneratedMatcher } from './generated.js';
 import { assessPolicy, type PolicyReport } from './policy.js';
 import { extractIssueRefs, stripNoise } from './refs.js';
-import type { Issue, PullRequest, RepoSnapshot } from './types.js';
+import type { FileStat, Issue, PullRequest, RepoSnapshot } from './types.js';
 
 export type RefStrength = 'linked' | 'mentioned';
 
@@ -79,6 +80,8 @@ export interface AnalyzeOptions {
   maxReviewableLines: number;
   /** Whether the repository uses changesets. `auto` detects it from open PRs. */
   changesets: boolean | 'auto';
+  /** Extra .gitattributes-style patterns to treat as generated, on top of the defaults and the repo's own. */
+  generatedPatterns: string[];
 }
 
 export const DEFAULT_OPTIONS: AnalyzeOptions = {
@@ -86,7 +89,32 @@ export const DEFAULT_OPTIONS: AnalyzeOptions = {
   ignorePaths: ['.changeset/'],
   maxReviewableLines: 600,
   changesets: 'auto',
+  generatedPatterns: [],
 };
+
+export interface ReviewableSize {
+  /** Changed lines a reviewer reads: everything except generated files. */
+  lines: number;
+  generatedLines: number;
+  generatedFiles: number;
+}
+
+/**
+ * Splits a change's size into reviewable and generated lines. Without per-file counts
+ * (older snapshots) every line counts as reviewable, as before. When the file list was
+ * cut off at 100 files, only the listed generated files are subtracted.
+ */
+export function reviewableSize(candidate: Pick<ChangeCandidate, 'additions' | 'deletions' | 'fileStats'>, matcher: GeneratedMatcher): ReviewableSize {
+  const total = candidate.additions + candidate.deletions;
+  let generatedLines = 0;
+  let generatedFiles = 0;
+  for (const f of candidate.fileStats ?? []) {
+    if (!matcher.isGenerated(f.path)) continue;
+    generatedLines += f.additions + f.deletions;
+    generatedFiles += 1;
+  }
+  return { lines: Math.max(0, total - generatedLines), generatedLines, generatedFiles };
+}
 
 const TEST_PATH = /(^|\/)(test|tests|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$/;
 
@@ -157,6 +185,8 @@ export interface ChangeCandidate {
   isDraft: boolean;
   body: string;
   files: string[];
+  /** Per-file line counts. Lets the size check leave generated files out. */
+  fileStats?: FileStat[];
   changedFiles: number;
   additions: number;
   deletions: number;
@@ -177,6 +207,7 @@ export function candidateFromPull(pull: PullRequest, snapshot: RepoSnapshot): Ch
     isDraft: pull.isDraft,
     body: pull.body,
     files: pull.files,
+    ...(pull.fileStats ? { fileStats: pull.fileStats } : {}),
     changedFiles: pull.changedFiles,
     additions: pull.additions,
     deletions: pull.deletions,
@@ -185,19 +216,34 @@ export function candidateFromPull(pull: PullRequest, snapshot: RepoSnapshot): Ch
   };
 }
 
+/**
+ * Maps every issue number that open PRs link (not just mention) to those PRs. Unlike
+ * `indexClaims` it does not need the issue list, so it also covers closed issues and
+ * issues outside the fetched window.
+ */
+export function indexOpenLinks(snapshot: RepoSnapshot): Map<number, number[]> {
+  const links = new Map<number, number[]>();
+  for (const pull of snapshot.openPulls) {
+    for (const n of pullIssueRefs(pull, snapshot.owner, snapshot.name).linked) {
+      const list = links.get(n) ?? [];
+      list.push(pull.number);
+      links.set(n, list);
+    }
+  }
+  return links;
+}
+
 export function checkCandidate(
   candidate: ChangeCandidate,
   snapshot: RepoSnapshot,
-  claims: Map<number, IssueClaim> = indexClaims(snapshot),
+  openLinks: Map<number, number[]> = indexOpenLinks(snapshot),
   opts: AnalyzeOptions = DEFAULT_OPTIONS,
 ): PullCheck {
   const excluded = new Set(candidate.exclude);
 
   const competing: Competition[] = [];
   for (const n of candidate.linkedIssues) {
-    const others = (claims.get(n)?.openPulls ?? [])
-      .filter((p) => p.strength === 'linked' && !excluded.has(p.number))
-      .map((p) => p.number);
+    const others = (openLinks.get(n) ?? []).filter((p) => !excluded.has(p)).sort((a, b) => a - b);
     if (others.length) competing.push({ issue: n, pulls: others });
   }
 
@@ -208,7 +254,10 @@ export function checkCandidate(
     .filter((o) => o.shared.length > 0)
     .sort((a, b) => b.shared.length - a.shared.length || a.number - b.number);
 
-  const lines = candidate.additions + candidate.deletions;
+  const size = reviewableSize(candidate, GeneratedMatcher.forRepo(snapshot.gitattributes, opts.generatedPatterns));
+  const generatedNote = size.generatedFiles
+    ? `, not counting ${size.generatedLines} in ${size.generatedFiles} generated file${size.generatedFiles === 1 ? '' : 's'}`
+    : '';
   const tests = candidate.files.filter(isTestPath);
   const description = stripNoise(candidate.body).replace(/\s+/g, ' ').trim();
 
@@ -247,8 +296,8 @@ export function checkCandidate(
     {
       id: 'size',
       label: 'Reviewable size',
-      ok: lines <= opts.maxReviewableLines,
-      detail: `${lines} lines changed`,
+      ok: size.lines <= opts.maxReviewableLines,
+      detail: `${size.lines} lines changed${generatedNote}`,
     },
     {
       id: 'no-competition',
@@ -278,6 +327,7 @@ export function checkCandidate(
 
 export function analyzeRepo(snapshot: RepoSnapshot, opts: AnalyzeOptions = DEFAULT_OPTIONS): RepoReport {
   const claims = indexClaims(snapshot);
+  const openLinks = indexOpenLinks(snapshot);
   const all = [...claims.values()];
   const newestFirst = (a: IssueClaim, b: IssueClaim) => b.issue.number - a.issue.number;
 
@@ -306,6 +356,6 @@ export function analyzeRepo(snapshot: RepoSnapshot, opts: AnalyzeOptions = DEFAU
     unclaimed,
     claimed,
     hotspots: findHotspots(snapshot.openPulls, opts),
-    pullChecks: snapshot.openPulls.map((p) => checkCandidate(candidateFromPull(p, snapshot), snapshot, claims, opts)),
+    pullChecks: snapshot.openPulls.map((p) => checkCandidate(candidateFromPull(p, snapshot), snapshot, openLinks, opts)),
   };
 }

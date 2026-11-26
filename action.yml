@@ -1,0 +1,44 @@
+name: pr-radar PR check
+description: Comment on each pull request with competing PRs, file overlaps with other open PRs, and a quick review checklist.
+author: Shreyas Gosavi
+branding:
+  icon: radio
+  color: blue
+
+inputs:
+  github-token:
+    description: 'Token used to read the repository and write the comment. Needs `pull-requests: write` to comment.'
+    required: false
+    default: ${{ github.token }}
+  comment:
+    description: Set to "false" to skip the PR comment and only write the job summary and outputs.
+    required: false
+    default: 'true'
+  fail-under:
+    description: Fail the step when the checklist score (0-100) is below this number. Empty means never fail.
+    required: false
+    default: ''
+  max-prs:
+    description: Open PRs to compare against.
+    required: false
+    default: '200'
+  max-merged:
+    description: Recently merged PRs to fetch.
+    required: false
+    default: '150'
+  min-hotspot:
+    description: Open PRs on one file before it counts as a hotspot.
+    required: false
+    default: '3'
+
+outputs:
+  score:
+    description: Checklist score from 0 to 100.
+  competing:
+    description: Number of issues this PR links that other open PRs also link.
+  overlaps:
+    description: Number of other open PRs that change at least one of the same files.
+
+runs:
+  using: node24
+  main: dist/src/action-entry.js
