@@ -1,0 +1,30 @@
+# Runs this repository's own action on its PRs. Other repos should use the
+# pull_request_target example in the README, so PRs from forks get a comment too.
+name: pr-radar
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-radar-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: radar
+        uses: ./
+      - name: Show outputs
+        env:
+          SCORE: ${{ steps.radar.outputs.score }}
+          OVERLAPS: ${{ steps.radar.outputs.overlaps }}
+        run: echo "score=$SCORE overlaps=$OVERLAPS"
