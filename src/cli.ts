@@ -3,14 +3,16 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { DEFAULT_OPTIONS, analyzeRepo, candidateFromPull, checkCandidate, type ChangeCandidate } from './analyze.js';
 import { readLocalBranch, remoteRepo } from './git.js';
-import { DEFAULT_LIMITS, GitHubClient, fetchSnapshot, resolveToken } from './github.js';
+import { DEFAULT_LIMITS, GitHubClient, fetchPolicyInfo, fetchSnapshot, fetchViewer, resolveToken } from './github.js';
+import { assessPolicy, type PolicyReport } from './policy.js';
 import { extractIssueRefs } from './refs.js';
-import { renderPullCheck, renderRepoReport } from './render.js';
+import { renderPolicy, renderPullCheck, renderRepoReport } from './render.js';
 import type { RepoSnapshot } from './types.js';
 
 const USAGE = `pr-radar: spot duplicate work, unclaimed issues and conflict hotspots in a GitHub repo.
 
 Usage:
+  pr-radar policy [owner/repo]                    Does this repo take PRs from you? (one quick API call)
   pr-radar scan  [owner/repo] [options]           Report for the whole repository
   pr-radar check [owner/repo] --pr <number>       Check one open PR
   pr-radar check [owner/repo] --branch [--base X] Check your local branch before opening a PR
@@ -96,10 +98,17 @@ export async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return values.help ? 0 : 2;
   }
-  if (command !== 'scan' && command !== 'check') throw new UsageError(`Unknown command "${command}"`);
+  if (command !== 'scan' && command !== 'check' && command !== 'policy') throw new UsageError(`Unknown command "${command}"`);
   if (command === 'check' && !values.pr === !values.branch) throw new UsageError('check needs exactly one of --pr <number> or --branch');
 
   const opts = { ...DEFAULT_OPTIONS, minHotspotPulls: positiveInt(values['min-hotspot'], '--min-hotspot', DEFAULT_OPTIONS.minHotspotPulls) };
+
+  if (command === 'policy' && !values['from-snapshot']) {
+    const { owner, name } = parseRepo(repoArg, values.remote, values.cwd);
+    const client = new GitHubClient(resolveToken());
+    const [info, viewer] = await Promise.all([fetchPolicyInfo(client, owner, name), fetchViewer(client)]);
+    return emit(assessPolicy(info, viewer), `${owner}/${name}`, values);
+  }
 
   let snapshot: RepoSnapshot;
   if (values['from-snapshot']) {
@@ -119,6 +128,8 @@ export async function main(argv: string[]): Promise<number> {
   if (values['save-snapshot']) writeFileSync(values['save-snapshot'], JSON.stringify(snapshot, null, 2));
 
   const repo = `${snapshot.owner}/${snapshot.name}`;
+  if (command === 'policy') return emit(assessPolicy(snapshot.policy, snapshot.viewer), repo, values);
+
   let output: string;
   let exitCode = 0;
 
@@ -148,6 +159,7 @@ export async function main(argv: string[]): Promise<number> {
         deletions: local.deletions,
         linkedIssues: extractIssueRefs(local.messages, snapshot.owner, snapshot.name).linked,
         exclude: own.map((p) => p.number),
+        checkPolicy: true,
       };
     }
     const check = checkCandidate(candidate, snapshot, undefined, opts);
@@ -159,6 +171,13 @@ export async function main(argv: string[]): Promise<number> {
   if (values.out) writeFileSync(values.out, output);
   else process.stdout.write(output);
   return exitCode;
+}
+
+function emit(policy: PolicyReport, repo: string, values: { json: boolean; out?: string }): number {
+  const output = values.json ? JSON.stringify(policy, null, 2) + '\n' : renderPolicy(policy, repo);
+  if (values.out) writeFileSync(values.out, output);
+  else process.stdout.write(output);
+  return 0;
 }
 
 main(process.argv.slice(2)).then(

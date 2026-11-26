@@ -100,6 +100,27 @@ test('changeset check is skipped for repos that do not use changesets', () => {
   assert.equal(check.checklist.some((c) => c.id === 'changeset'), false);
 });
 
+test('branch checks warn when the repo does not take your PR', () => {
+  const policy = { isArchived: false, viewerPermission: 'READ', contributingPath: 'CONTRIBUTING.md', contributingText: 'Pull requests are limited to repository collaborators.' };
+  const snap = snapshot({ viewer: 'sam', policy, issues: [issue(1)] });
+  const branch = { ...candidateFromPull(pull(0, { body: `Fixes #1\n${LONG_BODY}`, files: ['test/a.test.ts'] }), snap), exclude: [], checkPolicy: true };
+
+  const blocked = checkCandidate(branch, snap);
+  assert.equal(blocked.checklist[0]?.id, 'policy');
+  assert.equal(blocked.checklist[0]?.ok, false);
+  assert.match(blocked.checklist[0]?.detail ?? '', /CONTRIBUTING.md: "Pull requests are limited to repository collaborators."/);
+
+  const asMember = checkCandidate(branch, { ...snap, policy: { ...policy, viewerPermission: 'MAINTAIN' } });
+  assert.equal(asMember.checklist[0]?.ok, true);
+
+  const firstStep = { ...snap, policy: { ...policy, contributingText: 'Please open an issue first.' } };
+  assert.equal(checkCandidate(branch, firstStep).checklist[0]?.ok, true, 'linked issue satisfies the first step');
+  assert.equal(checkCandidate({ ...branch, linkedIssues: [] }, firstStep).checklist[0]?.ok, false);
+
+  const prCheck = checkCandidate(candidateFromPull(pull(5), snap), snap);
+  assert.equal(prCheck.checklist.some((c) => c.id === 'policy'), false, 'existing PRs are not policy-checked');
+});
+
 test('truncated file lists are reported', () => {
   const big = pull(20, { files: ['a.ts'], changedFiles: 250 });
   const snap = snapshot({ openPulls: [big] });

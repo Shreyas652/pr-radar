@@ -1,4 +1,5 @@
 import type { IssueClaim, PullCheck, PullRef, RepoReport } from './analyze.js';
+import type { PolicyReport, Verdict } from './policy.js';
 
 export const COMMENT_MARKER = '<!-- pr-radar -->';
 
@@ -34,6 +35,31 @@ function section(title: string, blurb: string, header: string[], rows: string[][
   return [...out, ''];
 }
 
+const VERDICT_ICON: Record<Verdict, string> = { blocked: '⛔', caution: '⚠️', ok: '✅', unknown: '❔' };
+const VERDICT_LABEL: Record<Verdict, string> = {
+  blocked: 'Outside PRs not accepted',
+  caution: 'PRs need a first step',
+  ok: 'Open to your PRs',
+  unknown: 'Policy unknown',
+};
+
+/** Policy lines without a heading, so the scan report and the policy command can share them. */
+function policyLines(policy: PolicyReport): string[] {
+  const out = [`**${VERDICT_ICON[policy.verdict]} ${VERDICT_LABEL[policy.verdict]}.** ${policy.summary}`, ''];
+  const facts: string[] = [];
+  if (policy.source) facts.push(`Guide: \`${policy.source}\``);
+  if (policy.viewerPermission) facts.push(`Your access: ${policy.viewerPermission}${policy.viewer ? ` (@${policy.viewer})` : ''}`);
+  if (facts.length) out.push(facts.join(' · '), '');
+  for (const quote of policy.evidence) out.push(`> ${quote}`, '');
+  for (const note of policy.notes) out.push(`- ${note}`);
+  if (policy.notes.length) out.push('');
+  return out;
+}
+
+export function renderPolicy(policy: PolicyReport, repo: string): string {
+  return [`# pr-radar policy: ${repo}`, '', ...policyLines(policy)].join('\n').trimEnd() + '\n';
+}
+
 export function renderRepoReport(report: RepoReport, limit = 25): string {
   const t = report.totals;
   const out = [
@@ -41,6 +67,9 @@ export function renderRepoReport(report: RepoReport, limit = 25): string {
     '',
     `_Snapshot ${report.fetchedAt} · ${t.openIssues} open issues · ${t.openPulls} open PRs · ${t.mergedPullsScanned} recently merged PRs scanned_`,
     '',
+    '## Contribution policy',
+    '',
+    ...policyLines(report.policy),
   ];
 
   out.push(
@@ -111,7 +140,7 @@ export function renderPullCheck(check: PullCheck, repo: string): string {
     '',
     `**Score:** ${check.score}% (${passed}/${check.checklist.length} checks) · ${repo}`,
     '',
-    ...check.checklist.map((c) => `- ${c.ok ? '✅' : '⚠️'} **${c.label}**: ${c.detail}`),
+    ...check.checklist.map((c) => `- ${c.ok ? '✅' : c.id === 'policy' ? '⛔' : '⚠️'} **${c.label}**: ${c.detail}`),
     '',
   ];
 

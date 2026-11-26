@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { analyzeRepo, candidateFromPull, checkCandidate } from '../src/analyze.js';
-import { COMMENT_MARKER, cell, renderPullCheck, renderRepoReport } from '../src/render.js';
+import { assessPolicy } from '../src/policy.js';
+import { COMMENT_MARKER, cell, renderPolicy, renderPullCheck, renderRepoReport } from '../src/render.js';
 import { issue, pull, snapshot } from './fixtures.js';
 
 test('cell escapes pipes, backslashes and newlines', () => {
@@ -20,6 +21,22 @@ test('repo report lists every section and caps rows', () => {
   }
   assert.ok(md.includes('#1 Crash \\| on start | #10 (@dev10), #11 (@dev11, draft)'));
   assert.ok(md.includes('…and 1 more'));
+});
+
+test('policy renders verdict, source, access and quotes', () => {
+  const policy = assessPolicy(
+    { isArchived: false, viewerPermission: 'READ', contributingPath: '.github/CONTRIBUTING.md', contributingText: 'We are not accepting pull requests. Sign the CLA.' },
+    'sam',
+  );
+  const md = renderPolicy(policy, 'acme/widgets');
+  assert.ok(md.startsWith('# pr-radar policy: acme/widgets'));
+  assert.ok(md.includes('**⛔ Outside PRs not accepted.**'));
+  assert.ok(md.includes('Guide: `.github/CONTRIBUTING.md` · Your access: READ (@sam)'));
+  assert.ok(md.includes('> We are not accepting pull requests.'));
+  assert.ok(md.includes('- Requires a CLA or DCO sign-off.'));
+
+  const scan = renderRepoReport(analyzeRepo(snapshot({ policy: { isArchived: false, contributingText: 'PRs welcome' } })));
+  assert.ok(scan.includes('## Contribution policy\n\n**✅ Open to your PRs.**'));
 });
 
 test('pull check starts with the sticky-comment marker', () => {

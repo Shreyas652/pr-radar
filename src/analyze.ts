@@ -1,3 +1,4 @@
+import { assessPolicy, type PolicyReport } from './policy.js';
 import { extractIssueRefs, stripNoise } from './refs.js';
 import type { Issue, PullRequest, RepoSnapshot } from './types.js';
 
@@ -24,7 +25,7 @@ export interface Hotspot {
 }
 
 export interface ChecklistItem {
-  id: 'linked-issue' | 'tests' | 'changeset' | 'description' | 'size' | 'no-competition';
+  id: 'policy' | 'linked-issue' | 'tests' | 'changeset' | 'description' | 'size' | 'no-competition';
   label: string;
   ok: boolean;
   detail: string;
@@ -60,6 +61,7 @@ export interface RepoReport {
   repo: string;
   fetchedAt: string;
   totals: { openIssues: number; openPulls: number; mergedPullsScanned: number };
+  policy: PolicyReport;
   contested: IssueClaim[];
   possiblyResolved: IssueClaim[];
   unclaimed: Issue[];
@@ -161,6 +163,8 @@ export interface ChangeCandidate {
   linkedIssues: number[];
   /** PR numbers to leave out of competition/overlap (the candidate's own PR). */
   exclude: number[];
+  /** Check whether the repo takes a PR from this author at all. Used for local branches. */
+  checkPolicy?: boolean;
 }
 
 export function candidateFromPull(pull: PullRequest, snapshot: RepoSnapshot): ChangeCandidate {
@@ -208,7 +212,14 @@ export function checkCandidate(
   const tests = candidate.files.filter(isTestPath);
   const description = stripNoise(candidate.body).replace(/\s+/g, ' ').trim();
 
-  const checklist: ChecklistItem[] = [
+  const checklist: ChecklistItem[] = [];
+  if (candidate.checkPolicy) {
+    const policy = assessPolicy(snapshot.policy, snapshot.viewer);
+    const ok = policy.verdict === 'blocked' ? false : policy.verdict === 'caution' ? candidate.linkedIssues.length > 0 : true;
+    const quote = policy.evidence[0] ? ` ${policy.source ?? 'Guide'}: "${policy.evidence[0]}"` : '';
+    checklist.push({ id: 'policy', label: 'Repo takes your PR', ok, detail: `${policy.summary}${quote}` });
+  }
+  checklist.push(
     {
       id: 'linked-issue',
       label: 'Linked issue',
@@ -221,7 +232,7 @@ export function checkCandidate(
       ok: tests.length > 0,
       detail: tests.length ? `${tests.length} test file${tests.length === 1 ? '' : 's'} changed` : 'no test files changed',
     },
-  ];
+  );
   if (usesChangesets(snapshot, opts)) {
     const has = candidate.files.some((f) => f.startsWith('.changeset/') && f.endsWith('.md'));
     checklist.push({ id: 'changeset', label: 'Changeset', ok: has, detail: has ? 'included' : 'repo uses changesets but none added' });
@@ -289,6 +300,7 @@ export function analyzeRepo(snapshot: RepoSnapshot, opts: AnalyzeOptions = DEFAU
       openPulls: snapshot.openPulls.length,
       mergedPullsScanned: snapshot.mergedPulls.length,
     },
+    policy: assessPolicy(snapshot.policy, snapshot.viewer),
     contested,
     possiblyResolved,
     unclaimed,
