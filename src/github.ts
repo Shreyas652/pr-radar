@@ -146,7 +146,7 @@ query($owner: String!, $name: String!, $cursor: String) {
       pageInfo { hasNextPage endCursor }
       nodes {
         ${PR_FIELDS}
-        files(first: 100) { nodes { path } }
+        files(first: 100) { nodes { path additions deletions } }
       }
     }
   }
@@ -168,7 +168,7 @@ query($owner: String!, $name: String!, $number: Int!) {
     pullRequest(number: $number) {
       state
       ${PR_FIELDS}
-      files(first: 100) { nodes { path } }
+      files(first: 100) { nodes { path additions deletions } }
     }
   }
 }`;
@@ -254,6 +254,21 @@ export async function fetchPull(client: GitHubClient, owner: string, name: strin
   return raw ? toPull(raw, raw.state === 'MERGED' ? 'MERGED' : 'OPEN') : undefined;
 }
 
+const GITATTRIBUTES_QUERY = `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    object(expression: "HEAD:.gitattributes") { ... on Blob { text } }
+  }
+}`;
+
+/** The root .gitattributes text, or undefined when there is none or it cannot be read. */
+export async function fetchGitattributes(client: GitHubClient, owner: string, name: string): Promise<string | undefined> {
+  return client
+    .graphql<{ repository: { object: { text?: string | null } | null } | null }>(GITATTRIBUTES_QUERY, { owner, name })
+    .then((d) => d.repository?.object?.text ?? undefined)
+    .catch(() => undefined);
+}
+
 export async function fetchViewer(client: GitHubClient): Promise<string | undefined> {
   return client
     .graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})
@@ -287,7 +302,7 @@ interface RawPull {
   changedFiles: number;
   author: { login: string } | null;
   closingIssuesReferences: { nodes: { number: number }[] };
-  files?: { nodes: { path: string }[] } | null;
+  files?: { nodes: { path: string; additions?: number; deletions?: number }[] } | null;
 }
 
 type RepoData<K extends string, N> = { repository: Record<K, Connection<N>> | null };
@@ -322,6 +337,7 @@ function toPull(raw: RawPull, state: PullRequest['state']): PullRequest {
     deletions: raw.deletions,
     changedFiles: raw.changedFiles,
     files: raw.files?.nodes.map((f) => f.path) ?? [],
+    ...(raw.files ? { fileStats: raw.files.nodes.map((f) => ({ path: f.path, additions: f.additions ?? 0, deletions: f.deletions ?? 0 })) } : {}),
     closingIssues: raw.closingIssuesReferences.nodes.map((n) => n.number),
   };
 }
@@ -353,12 +369,13 @@ export async function fetchSnapshot(
   now: () => Date = () => new Date(),
 ): Promise<RepoSnapshot> {
   const vars = { owner, name };
-  const [issues, openPulls, mergedPulls, viewer, policy] = await Promise.all([
+  const [issues, openPulls, mergedPulls, viewer, policy, gitattributes] = await Promise.all([
     collectPages(client, ISSUES_QUERY, vars, repoConnection<'issues', RawIssue>('issues', owner, name), limits.maxIssues),
     collectPages(client, OPEN_PRS_QUERY, vars, repoConnection<'pullRequests', RawPull>('pullRequests', owner, name), limits.maxOpenPulls),
     collectPages(client, MERGED_PRS_QUERY, vars, repoConnection<'pullRequests', RawPull>('pullRequests', owner, name), limits.maxMergedPulls),
     fetchViewer(client),
     fetchPolicyInfo(client, owner, name).catch(() => undefined),
+    fetchGitattributes(client, owner, name),
   ]);
   return {
     owner,
@@ -366,6 +383,7 @@ export async function fetchSnapshot(
     fetchedAt: now().toISOString(),
     viewer,
     policy,
+    ...(gitattributes === undefined ? {} : { gitattributes }),
     issues: issues.map(toIssue),
     openPulls: openPulls.map((p) => toPull(p, 'OPEN')),
     mergedPulls: mergedPulls.map((p) => toPull(p, 'MERGED')),

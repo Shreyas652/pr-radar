@@ -10,6 +10,12 @@ export interface Issue {
   updatedAt: string;
 }
 
+export interface FileStat {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
 export interface PullRequest {
   number: number;
   title: string;
@@ -26,6 +32,8 @@ export interface PullRequest {
   changedFiles: number;
   /** Paths changed by the PR. Empty for merged PRs, which are fetched without files. */
   files: string[];
+  /** Per-file line counts, aligned with `files`. Missing in older snapshots. */
+  fileStats?: FileStat[];
   /** Issues GitHub itself links as "closed by this PR". */
   closingIssues: number[];
 }
@@ -47,6 +55,8 @@ export interface RepoSnapshot {
   viewer?: string;
   /** Missing in snapshots saved before policy checks existed. */
   policy?: RepoPolicyInfo;
+  /** The repo's root .gitattributes, used to recognise generated files. */
+  gitattributes?: string;
   issues: Issue[];
   openPulls: PullRequest[];
   mergedPulls: PullRequest[];
