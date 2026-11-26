@@ -7,7 +7,7 @@ branding:
 
 inputs:
   github-token:
-    description: Token used to read the repository and write the comment. Needs `pull-requests: write` to comment.
+    description: 'Token used to read the repository and write the comment. Needs `pull-requests: write` to comment.'
     required: false
     default: ${{ github.token }}
   comment:
