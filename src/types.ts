@@ -30,12 +30,23 @@ export interface PullRequest {
   closingIssues: number[];
 }
 
+export interface RepoPolicyInfo {
+  isArchived: boolean;
+  /** The token user's permission on the repo: READ, TRIAGE, WRITE, MAINTAIN or ADMIN. */
+  viewerPermission?: string;
+  /** Path of the contributing guide GitHub would show, if any. */
+  contributingPath?: string;
+  contributingText?: string;
+}
+
 export interface RepoSnapshot {
   owner: string;
   name: string;
   fetchedAt: string;
   /** Login of the token's user, when known. Used to recognise your own PRs. */
   viewer?: string;
+  /** Missing in snapshots saved before policy checks existed. */
+  policy?: RepoPolicyInfo;
   issues: Issue[];
   openPulls: PullRequest[];
   mergedPulls: PullRequest[];

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseGitHubRemote, parseNumstat } from '../src/git.js';
-import { GitHubClient, collectPages, fetchSnapshot, resolveToken } from '../src/github.js';
+import { CONTRIBUTING_PATHS, GitHubClient, collectPages, fetchPolicyInfo, fetchSnapshot, resolveToken } from '../src/github.js';
 
 function fakeFetch(handler: (body: { query: string; variables: Record<string, unknown> }) => unknown) {
   const calls: { query: string; variables: Record<string, unknown> }[] = [];
@@ -39,7 +39,10 @@ test('GraphQL errors surface as exceptions', async () => {
 test('fetchSnapshot maps raw nodes and tolerates a missing viewer', async () => {
   const empty = { pageInfo: { hasNextPage: false, endCursor: null } };
   const { impl } = fakeFetch(({ query }) => {
-    if (query.includes('viewer')) return { errors: [{ message: 'no viewer for app tokens' }] };
+    if (query.includes('isArchived')) {
+      return { data: { repository: { isArchived: false, viewerPermission: 'READ', c0: null, c1: null, c2: { text: 'PRs welcome' } } } };
+    }
+    if (query.includes('viewer {')) return { errors: [{ message: 'no viewer for app tokens' }] };
     if (query.includes('issues(')) {
       return {
         data: {
@@ -96,6 +99,7 @@ test('fetchSnapshot maps raw nodes and tolerates a missing viewer', async () => 
 
   const snap = await fetchSnapshot(new GitHubClient('t', impl), 'acme', 'widgets', undefined, () => new Date('2026-11-26T00:00:00Z'));
   assert.equal(snap.viewer, undefined);
+  assert.deepEqual(snap.policy, { isArchived: false, viewerPermission: 'READ', contributingPath: 'CONTRIBUTING.md', contributingText: 'PRs welcome' });
   assert.equal(snap.fetchedAt, '2026-11-26T00:00:00.000Z');
   assert.deepEqual(snap.issues[0], {
     number: 1,
@@ -116,8 +120,38 @@ test('fetchSnapshot maps raw nodes and tolerates a missing viewer', async () => 
 });
 
 test('missing repository gives a clear error', async () => {
-  const { impl } = fakeFetch(({ query }) => (query.includes('viewer') ? { data: { viewer: { login: 'me' } } } : { data: { repository: null } }));
+  const { impl } = fakeFetch(({ query }) => (query.includes('viewer {') ? { data: { viewer: { login: 'me' } } } : { data: { repository: null } }));
   await assert.rejects(fetchSnapshot(new GitHubClient('t', impl), 'acme', 'nope'), /acme\/nope not found/);
+  await assert.rejects(fetchPolicyInfo(new GitHubClient('t', impl), 'acme', 'nope'), /acme\/nope not found/);
+});
+
+test('fetchPolicyInfo takes the first guide in GitHub lookup order', async () => {
+  const { impl, calls } = fakeFetch(() => ({
+    data: { repository: { isArchived: true, viewerPermission: null, c0: null, c1: { text: 'from .github' }, c2: { text: 'from root' } } },
+  }));
+  const info = await fetchPolicyInfo(new GitHubClient('t', impl), 'acme', 'widgets');
+  assert.deepEqual(info, { isArchived: true, viewerPermission: undefined, contributingPath: CONTRIBUTING_PATHS[1], contributingText: 'from .github' });
+  assert.ok(calls[0]?.query.includes('"HEAD:.github/CONTRIBUTING.md"'));
+  assert.equal(calls.length, 1, 'no owner fallback when the repo has its own guide');
+});
+
+test('fetchPolicyInfo falls back to the owner .github repository', async () => {
+  const { impl, calls } = fakeFetch(({ query }) =>
+    query.includes('isArchived')
+      ? { data: { repository: { isArchived: false, viewerPermission: 'READ' } } }
+      : { data: { repository: { c3: { text: 'org-wide guide' } } } },
+  );
+  const info = await fetchPolicyInfo(new GitHubClient('t', impl), 'acme', 'widgets');
+  assert.equal(info.contributingPath, 'acme/.github:contributing.md');
+  assert.equal(info.contributingText, 'org-wide guide');
+  assert.deepEqual(calls[1]?.variables, { owner: 'acme' });
+});
+
+test('fetchPolicyInfo survives a missing owner .github repository', async () => {
+  const { impl } = fakeFetch(({ query }) =>
+    query.includes('isArchived') ? { data: { repository: { isArchived: false, viewerPermission: 'READ' } } } : { errors: [{ message: 'not found' }] },
+  );
+  assert.deepEqual(await fetchPolicyInfo(new GitHubClient('t', impl), 'acme', 'widgets'), { isArchived: false, viewerPermission: 'READ' });
 });
 
 test('resolveToken prefers environment variables', () => {

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import type { Issue, PullRequest, RepoSnapshot } from './types.js';
+import type { Issue, PullRequest, RepoPolicyInfo, RepoSnapshot } from './types.js';
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -118,6 +118,80 @@ query($owner: String!, $name: String!, $cursor: String) {
 
 const VIEWER_QUERY = `query { viewer { login } }`;
 
+/** Where GitHub looks for a contributing guide, in its own lookup order. */
+export const CONTRIBUTING_PATHS = [
+  '.github/CONTRIBUTING.md',
+  '.github/contributing.md',
+  'CONTRIBUTING.md',
+  'contributing.md',
+  'CONTRIBUTING.rst',
+  'CONTRIBUTING',
+  'docs/CONTRIBUTING.md',
+  'docs/contributing.md',
+];
+
+const GUIDE_FIELDS = CONTRIBUTING_PATHS.map(
+  (p, i) => `c${i}: object(expression: ${JSON.stringify(`HEAD:${p}`)}) { ... on Blob { text } }`,
+).join('\n    ');
+
+const POLICY_QUERY = `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    isArchived
+    viewerPermission
+    ${GUIDE_FIELDS}
+  }
+}`;
+
+/** GitHub shows an owner's `.github` repository guide for repos that have none. */
+const OWNER_DEFAULTS_QUERY = `
+query($owner: String!) {
+  repository(owner: $owner, name: ".github") {
+    ${GUIDE_FIELDS}
+  }
+}`;
+
+type GuideFields = Record<string, { text?: string | null } | null | boolean | string>;
+type PolicyData = { repository: ({ isArchived: boolean; viewerPermission: string | null } & GuideFields) | null };
+
+function firstGuide(fields: GuideFields | null | undefined): { path: string; text: string } | undefined {
+  if (!fields) return undefined;
+  for (const [i, path] of CONTRIBUTING_PATHS.entries()) {
+    const blob = fields[`c${i}`];
+    if (blob && typeof blob === 'object' && typeof blob.text === 'string') return { path, text: blob.text };
+  }
+  return undefined;
+}
+
+export async function fetchPolicyInfo(client: GitHubClient, owner: string, name: string): Promise<RepoPolicyInfo> {
+  const data = await client.graphql<PolicyData>(POLICY_QUERY, { owner, name });
+  const repo = data.repository;
+  if (!repo) throw new Error(`Repository ${owner}/${name} not found or not accessible`);
+
+  const info: RepoPolicyInfo = { isArchived: repo.isArchived, viewerPermission: repo.viewerPermission ?? undefined };
+  let guide = firstGuide(repo);
+  let source = guide?.path;
+  if (!guide && name !== '.github') {
+    const defaults = await client
+      .graphql<{ repository: GuideFields | null }>(OWNER_DEFAULTS_QUERY, { owner })
+      .catch(() => ({ repository: null }));
+    guide = firstGuide(defaults.repository);
+    source = guide && `${owner}/.github:${guide.path}`;
+  }
+  if (guide) {
+    info.contributingPath = source;
+    info.contributingText = guide.text;
+  }
+  return info;
+}
+
+export async function fetchViewer(client: GitHubClient): Promise<string | undefined> {
+  return client
+    .graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})
+    .then((d) => d.viewer.login)
+    .catch(() => undefined);
+}
+
 interface RawIssue {
   number: number;
   title: string;
@@ -210,17 +284,19 @@ export async function fetchSnapshot(
   now: () => Date = () => new Date(),
 ): Promise<RepoSnapshot> {
   const vars = { owner, name };
-  const [issues, openPulls, mergedPulls, viewer] = await Promise.all([
+  const [issues, openPulls, mergedPulls, viewer, policy] = await Promise.all([
     collectPages(client, ISSUES_QUERY, vars, repoConnection<'issues', RawIssue>('issues', owner, name), limits.maxIssues),
     collectPages(client, OPEN_PRS_QUERY, vars, repoConnection<'pullRequests', RawPull>('pullRequests', owner, name), limits.maxOpenPulls),
     collectPages(client, MERGED_PRS_QUERY, vars, repoConnection<'pullRequests', RawPull>('pullRequests', owner, name), limits.maxMergedPulls),
-    client.graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {}).then((d) => d.viewer.login).catch(() => undefined),
+    fetchViewer(client),
+    fetchPolicyInfo(client, owner, name).catch(() => undefined),
   ]);
   return {
     owner,
     name,
     fetchedAt: now().toISOString(),
     viewer,
+    policy,
     issues: issues.map(toIssue),
     openPulls: openPulls.map((p) => toPull(p, 'OPEN')),
     mergedPulls: mergedPulls.map((p) => toPull(p, 'MERGED')),
