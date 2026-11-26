@@ -1,0 +1,33 @@
+{
+  "name": "pr-radar",
+  "version": "0.1.0",
+  "description": "Spot duplicate work, unclaimed issues, and merge-conflict hotspots in a GitHub repository before anyone writes another PR.",
+  "type": "module",
+  "bin": {
+    "pr-radar": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/src"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test \"dist/test/**/*.test.js\"",
+    "start": "node dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "github",
+    "open-source",
+    "maintainers",
+    "triage",
+    "pull-requests",
+    "issues"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.9.0"
+  }
+}
