@@ -155,6 +155,7 @@ export async function main(argv) {
                 isDraft: false,
                 body: local.messages,
                 files: local.files,
+                fileStats: local.fileStats,
                 changedFiles: local.files.length,
                 additions: local.additions,
                 deletions: local.deletions,

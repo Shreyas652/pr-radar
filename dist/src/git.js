@@ -4,18 +4,19 @@ function git(args, cwd) {
 }
 /** Parses `git diff --numstat` output. Binary files ("-\t-\tpath") count as zero lines. */
 export function parseNumstat(numstat) {
-    const files = [];
-    let additions = 0;
-    let deletions = 0;
+    const fileStats = [];
     for (const line of numstat.split('\n')) {
         const [add, del, ...rest] = line.split('\t');
         if (!rest.length)
             continue;
-        files.push(rest.join('\t'));
-        additions += Number(add) || 0;
-        deletions += Number(del) || 0;
+        fileStats.push({ path: rest.join('\t'), additions: Number(add) || 0, deletions: Number(del) || 0 });
     }
-    return { files, additions, deletions };
+    return {
+        files: fileStats.map((f) => f.path),
+        fileStats,
+        additions: fileStats.reduce((n, f) => n + f.additions, 0),
+        deletions: fileStats.reduce((n, f) => n + f.deletions, 0),
+    };
 }
 export function readLocalBranch(base, cwd = process.cwd()) {
     const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);

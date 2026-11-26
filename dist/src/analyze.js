@@ -1,3 +1,4 @@
+import { GeneratedMatcher } from './generated.js';
 import { assessPolicy } from './policy.js';
 import { extractIssueRefs, stripNoise } from './refs.js';
 export const DEFAULT_OPTIONS = {
@@ -5,7 +6,25 @@ export const DEFAULT_OPTIONS = {
     ignorePaths: ['.changeset/'],
     maxReviewableLines: 600,
     changesets: 'auto',
+    generatedPatterns: [],
 };
+/**
+ * Splits a change's size into reviewable and generated lines. Without per-file counts
+ * (older snapshots) every line counts as reviewable, as before. When the file list was
+ * cut off at 100 files, only the listed generated files are subtracted.
+ */
+export function reviewableSize(candidate, matcher) {
+    const total = candidate.additions + candidate.deletions;
+    let generatedLines = 0;
+    let generatedFiles = 0;
+    for (const f of candidate.fileStats ?? []) {
+        if (!matcher.isGenerated(f.path))
+            continue;
+        generatedLines += f.additions + f.deletions;
+        generatedFiles += 1;
+    }
+    return { lines: Math.max(0, total - generatedLines), generatedLines, generatedFiles };
+}
 const TEST_PATH = /(^|\/)(test|tests|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$/;
 export function isTestPath(path) {
     return TEST_PATH.test(path);
@@ -71,6 +90,7 @@ export function candidateFromPull(pull, snapshot) {
         isDraft: pull.isDraft,
         body: pull.body,
         files: pull.files,
+        ...(pull.fileStats ? { fileStats: pull.fileStats } : {}),
         changedFiles: pull.changedFiles,
         additions: pull.additions,
         deletions: pull.deletions,
@@ -108,7 +128,10 @@ export function checkCandidate(candidate, snapshot, openLinks = indexOpenLinks(s
         .map((p) => ({ number: p.number, title: p.title, author: p.author, shared: relevantFiles(p, opts.ignorePaths).filter((f) => mine.has(f)) }))
         .filter((o) => o.shared.length > 0)
         .sort((a, b) => b.shared.length - a.shared.length || a.number - b.number);
-    const lines = candidate.additions + candidate.deletions;
+    const size = reviewableSize(candidate, GeneratedMatcher.forRepo(snapshot.gitattributes, opts.generatedPatterns));
+    const generatedNote = size.generatedFiles
+        ? `, not counting ${size.generatedLines} in ${size.generatedFiles} generated file${size.generatedFiles === 1 ? '' : 's'}`
+        : '';
     const tests = candidate.files.filter(isTestPath);
     const description = stripNoise(candidate.body).replace(/\s+/g, ' ').trim();
     const checklist = [];
@@ -141,8 +164,8 @@ export function checkCandidate(candidate, snapshot, openLinks = indexOpenLinks(s
     }, {
         id: 'size',
         label: 'Reviewable size',
-        ok: lines <= opts.maxReviewableLines,
-        detail: `${lines} lines changed`,
+        ok: size.lines <= opts.maxReviewableLines,
+        detail: `${size.lines} lines changed${generatedNote}`,
     }, {
         id: 'no-competition',
         label: 'No competing PR',

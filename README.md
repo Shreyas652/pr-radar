@@ -123,6 +123,13 @@ Results on a sample of real repos (November 2026):
 | **Conflict hotspots** | Files touched by at least 3 open PRs (`--min-hotspot`). |
 | **Open PR checklist** | Linked issue, tests, changeset (when the repo uses them), description, reviewable size, no competing PR. |
 
+**Reviewable size** counts only the lines a reviewer reads (600 or fewer passes). Generated files are left out and listed separately, for example `300 lines changed, not counting 1528 in 2 generated files`. Out of the box that covers `dist/` folders at any depth, `*.min.js`, `*.min.css`, `*.map`, `__snapshots__/` and common lockfiles. `build/` is not on the list, because many repos keep source there. The repo's own `.gitattributes` adds to or overrides those defaults with `linguist-generated` lines, the same lines GitHub uses to collapse generated files in diffs:
+
+```gitattributes
+src/gen/** linguist-generated=true   # also treat these as generated
+dist/** -linguist-generated          # this repo's dist/ is real source
+```
+
 Example from a real run on `openai/openai-agents-js` (trimmed):
 
 ```md

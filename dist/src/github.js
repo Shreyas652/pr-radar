@@ -119,7 +119,7 @@ query($owner: String!, $name: String!, $cursor: String) {
       pageInfo { hasNextPage endCursor }
       nodes {
         ${PR_FIELDS}
-        files(first: 100) { nodes { path } }
+        files(first: 100) { nodes { path additions deletions } }
       }
     }
   }
@@ -139,7 +139,7 @@ query($owner: String!, $name: String!, $number: Int!) {
     pullRequest(number: $number) {
       state
       ${PR_FIELDS}
-      files(first: 100) { nodes { path } }
+      files(first: 100) { nodes { path additions deletions } }
     }
   }
 }`;
@@ -214,6 +214,19 @@ export async function fetchPull(client, owner, name, number) {
     const raw = data.repository.pullRequest;
     return raw ? toPull(raw, raw.state === 'MERGED' ? 'MERGED' : 'OPEN') : undefined;
 }
+const GITATTRIBUTES_QUERY = `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    object(expression: "HEAD:.gitattributes") { ... on Blob { text } }
+  }
+}`;
+/** The root .gitattributes text, or undefined when there is none or it cannot be read. */
+export async function fetchGitattributes(client, owner, name) {
+    return client
+        .graphql(GITATTRIBUTES_QUERY, { owner, name })
+        .then((d) => d.repository?.object?.text ?? undefined)
+        .catch(() => undefined);
+}
 export async function fetchViewer(client) {
     return client
         .graphql(VIEWER_QUERY, {})
@@ -249,6 +262,7 @@ function toPull(raw, state) {
         deletions: raw.deletions,
         changedFiles: raw.changedFiles,
         files: raw.files?.nodes.map((f) => f.path) ?? [],
+        ...(raw.files ? { fileStats: raw.files.nodes.map((f) => ({ path: f.path, additions: f.additions ?? 0, deletions: f.deletions ?? 0 })) } : {}),
         closingIssues: raw.closingIssuesReferences.nodes.map((n) => n.number),
     };
 }
@@ -266,12 +280,13 @@ export const DEFAULT_LIMITS = {
 };
 export async function fetchSnapshot(client, owner, name, limits = DEFAULT_LIMITS, now = () => new Date()) {
     const vars = { owner, name };
-    const [issues, openPulls, mergedPulls, viewer, policy] = await Promise.all([
+    const [issues, openPulls, mergedPulls, viewer, policy, gitattributes] = await Promise.all([
         collectPages(client, ISSUES_QUERY, vars, repoConnection('issues', owner, name), limits.maxIssues),
         collectPages(client, OPEN_PRS_QUERY, vars, repoConnection('pullRequests', owner, name), limits.maxOpenPulls),
         collectPages(client, MERGED_PRS_QUERY, vars, repoConnection('pullRequests', owner, name), limits.maxMergedPulls),
         fetchViewer(client),
         fetchPolicyInfo(client, owner, name).catch(() => undefined),
+        fetchGitattributes(client, owner, name),
     ]);
     return {
         owner,
@@ -279,6 +294,7 @@ export async function fetchSnapshot(client, owner, name, limits = DEFAULT_LIMITS
         fetchedAt: now().toISOString(),
         viewer,
         policy,
+        ...(gitattributes === undefined ? {} : { gitattributes }),
         issues: issues.map(toIssue),
         openPulls: openPulls.map((p) => toPull(p, 'OPEN')),
         mergedPulls: mergedPulls.map((p) => toPull(p, 'MERGED')),
