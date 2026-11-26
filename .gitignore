@@ -1,3 +1,4 @@
 node_modules/
-dist/
+# dist/src is committed because GitHub runs the action from it directly.
+dist/test/
 *.snapshot.json
