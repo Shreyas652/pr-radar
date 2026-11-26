@@ -62,7 +62,7 @@ jobs:
   radar:
     runs-on: ubuntu-latest
     steps:
-      - uses: Shreyas652/pr-radar@main # pin a release tag or commit SHA in production
+      - uses: Shreyas652/pr-radar@v0.3.0
 ```
 
 **Why `pull_request_target`?** On `pull_request`, GitHub gives PRs from forks a read-only token, so the action can't comment. It still writes the report to the job summary and prints a warning. `pull_request_target` runs with your repository's token instead. That is safe here because pr-radar never checks out or runs the PR's code: it only reads PR metadata through the API. Don't add a step that checks out the PR head to this workflow.

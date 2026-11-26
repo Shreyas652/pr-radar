@@ -1,6 +1,6 @@
 {
   "name": "pr-radar",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Spot duplicate work, unclaimed issues, and merge-conflict hotspots in a GitHub repository before anyone writes another PR.",
   "type": "module",
   "bin": {
