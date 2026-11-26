@@ -7,6 +7,11 @@ export function cell(text: string): string {
   return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
 }
 
+/** A file path as inline code. Backticks in the path would end the code span early. */
+export function codeCell(path: string): string {
+  return `\`${cell(path.replace(/`/g, "'"))}\``;
+}
+
 function ageDays(from: string, now: string): number {
   return Math.max(0, Math.floor((Date.parse(now) - Date.parse(from)) / 86_400_000));
 }
@@ -110,7 +115,7 @@ export function renderRepoReport(report: RepoReport, limit = 25): string {
       'Conflict hotspots',
       'Files touched by several open PRs at once. Changes here are likely to conflict.',
       ['File', 'Open PRs'],
-      report.hotspots.map((h) => [`\`${cell(h.path)}\``, h.pulls.map((n) => `#${n}`).join(', ')]),
+      report.hotspots.map((h) => [codeCell(h.path), h.pulls.map((n) => `#${n}`).join(', ')]),
       limit,
     ),
     ...section(
@@ -131,16 +136,31 @@ export function renderRepoReport(report: RepoReport, limit = 25): string {
   return out.join('\n').trimEnd() + '\n';
 }
 
-export function renderPullCheck(check: PullCheck, repo: string): string {
+/** Breaks `@name` so GitHub does not notify anyone, while it still reads the same. */
+export function noMention(text: string): string {
+  return text.replace(/@(?=[\w-])/g, '@​');
+}
+
+export interface PullCheckRenderOptions {
+  /**
+   * Whether `@user` in author names and PR titles may notify people. Bot comments set this
+   * to false, so every push does not ping the authors of overlapping PRs.
+   */
+  mentions?: boolean;
+}
+
+export function renderPullCheck(check: PullCheck, repo: string, options: PullCheckRenderOptions = {}): string {
+  const safe = options.mentions === false ? noMention : (s: string) => s;
+  const who = (login: string) => (options.mentions === false ? login : `@${login}`);
   const passed = check.checklist.filter((c) => c.ok).length;
   const heading = check.number > 0 ? `#${check.number} ${check.title}` : `local branch: ${check.title}`;
   const out = [
     COMMENT_MARKER,
-    `### pr-radar: ${cell(heading)}`,
+    `### pr-radar: ${safe(cell(heading))}`,
     '',
     `**Score:** ${check.score}% (${passed}/${check.checklist.length} checks) · ${repo}`,
     '',
-    ...check.checklist.map((c) => `- ${c.ok ? '✅' : c.id === 'policy' ? '⛔' : '⚠️'} **${c.label}**: ${c.detail}`),
+    ...check.checklist.map((c) => `- ${c.ok ? '✅' : c.id === 'policy' ? '⛔' : '⚠️'} **${c.label}**: ${safe(c.detail)}`),
     '',
   ];
 
@@ -156,9 +176,9 @@ export function renderPullCheck(check: PullCheck, repo: string): string {
   } else {
     out.push('| PR | Shared files |', '| --- | --- |');
     for (const o of check.overlaps.slice(0, 15)) {
-      const files = o.shared.slice(0, 5).map((f) => `\`${cell(f)}\``).join(', ');
+      const files = o.shared.slice(0, 5).map(codeCell).join(', ');
       const more = o.shared.length > 5 ? ` +${o.shared.length - 5} more` : '';
-      out.push(`| #${o.number} ${cell(o.title)} (@${o.author}) | ${files}${more} |`);
+      out.push(`| #${o.number} ${safe(cell(o.title))} (${who(o.author)}) | ${files}${more} |`);
     }
     if (check.overlaps.length > 15) out.push('', `_…and ${check.overlaps.length - 15} more PRs._`);
   }
