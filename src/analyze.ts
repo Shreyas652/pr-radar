@@ -185,19 +185,34 @@ export function candidateFromPull(pull: PullRequest, snapshot: RepoSnapshot): Ch
   };
 }
 
+/**
+ * Maps every issue number that open PRs link (not just mention) to those PRs. Unlike
+ * `indexClaims` it does not need the issue list, so it also covers closed issues and
+ * issues outside the fetched window.
+ */
+export function indexOpenLinks(snapshot: RepoSnapshot): Map<number, number[]> {
+  const links = new Map<number, number[]>();
+  for (const pull of snapshot.openPulls) {
+    for (const n of pullIssueRefs(pull, snapshot.owner, snapshot.name).linked) {
+      const list = links.get(n) ?? [];
+      list.push(pull.number);
+      links.set(n, list);
+    }
+  }
+  return links;
+}
+
 export function checkCandidate(
   candidate: ChangeCandidate,
   snapshot: RepoSnapshot,
-  claims: Map<number, IssueClaim> = indexClaims(snapshot),
+  openLinks: Map<number, number[]> = indexOpenLinks(snapshot),
   opts: AnalyzeOptions = DEFAULT_OPTIONS,
 ): PullCheck {
   const excluded = new Set(candidate.exclude);
 
   const competing: Competition[] = [];
   for (const n of candidate.linkedIssues) {
-    const others = (claims.get(n)?.openPulls ?? [])
-      .filter((p) => p.strength === 'linked' && !excluded.has(p.number))
-      .map((p) => p.number);
+    const others = (openLinks.get(n) ?? []).filter((p) => !excluded.has(p)).sort((a, b) => a - b);
     if (others.length) competing.push({ issue: n, pulls: others });
   }
 
@@ -278,6 +293,7 @@ export function checkCandidate(
 
 export function analyzeRepo(snapshot: RepoSnapshot, opts: AnalyzeOptions = DEFAULT_OPTIONS): RepoReport {
   const claims = indexClaims(snapshot);
+  const openLinks = indexOpenLinks(snapshot);
   const all = [...claims.values()];
   const newestFirst = (a: IssueClaim, b: IssueClaim) => b.issue.number - a.issue.number;
 
@@ -306,6 +322,6 @@ export function analyzeRepo(snapshot: RepoSnapshot, opts: AnalyzeOptions = DEFAU
     unclaimed,
     claimed,
     hotspots: findHotspots(snapshot.openPulls, opts),
-    pullChecks: snapshot.openPulls.map((p) => checkCandidate(candidateFromPull(p, snapshot), snapshot, claims, opts)),
+    pullChecks: snapshot.openPulls.map((p) => checkCandidate(candidateFromPull(p, snapshot), snapshot, openLinks, opts)),
   };
 }
